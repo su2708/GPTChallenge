@@ -114,7 +114,6 @@ python-iso639==2025.2.8
 python-json-logger==3.2.1
 python-magic==0.4.27
 python-oxmsg==0.0.2
-pywinpty==2.0.15
 PyYAML==6.0.2
 RapidFuzz==3.12.1
 referencing==0.36.2
