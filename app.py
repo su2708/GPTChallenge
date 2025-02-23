@@ -1,333 +1,304 @@
-import os
+import json
 import streamlit as st
 
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_unstructured import UnstructuredLoader
-from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import CacheBackedEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
 from langchain.storage import LocalFileStore
-from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.memory import ConversationBufferMemory
-from langchain.callbacks.base import BaseCallbackHandler
+from langchain.text_splitter import CharacterTextSplitter
+from langchain_openai import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema.runnable import RunnableLambda, RunnablePassthrough
+from langchain.callbacks import StreamingStdOutCallbackHandler
+from langchain.schema import BaseOutputParser
+from pathlib import Path
 
 st.set_page_config(
-    page_title="Fullstack-GPT Challenge",
-    page_icon="🤖"
+    page_title="Assignment #7 QuizGPT",
+    page_icon="❓",
 )
 
-st.title("RAG GPT Challenge")
-
-st.markdown(
-    """
-    Welcome!
-    
-    Use this chatbot to ask questions to an AI about your files!
-    
-    Upload your files on the sidebar.
-    """
-)
+st.title("Quiz GPT")
 
 # 사용자 OpenAI API Key 입력 
 st.sidebar.header("🔑 OpenAI API Key")
 api_key = st.sidebar.text_input("Enter your OpenAI API Key", type="password")
 
-repo_url = "https://github.com/su2708/Fullstack-GPT"
-st.sidebar.markdown(f"[📂 GitHub 코드 보기]({repo_url})")
-
 if not api_key:
     st.warning("OpenAI API Key를 입력하세요.")
     st.stop()
 
-# 메시지 상태 초기화
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
+class JsonOutputParser(BaseOutputParser):
+    def parse(self, text):
+        text = text.replace("```", "").replace("json", "")
+        return json.loads(text)
 
-# 대화 초기화 버튼 (항상 표시)
-if st.sidebar.button("대화 초기화"):
-    st.session_state.messages = []
-    st.rerun()
 
-# llm의 streaming 응답을 표시하기 위한 callback handler
-class ChatCallbackHandler(BaseCallbackHandler):
-    def __init__(self, *args, **kwargs):
-        self.message = ""  # 빈 message 문자열 생성
-    
-    def on_llm_start(self, *args, **kwargs):
-        self.message_box = st.empty()
-    
-    def on_llm_end(self, *args, **kwargs):
-        save_message(self.message, "ai")
-    
-    def on_llm_new_token(self, token, *args, **kwargs):
-        self.message += token
-        self.message_box.markdown(self.message)
+output_parser = JsonOutputParser()
 
 llm = ChatOpenAI(
     temperature=0.1,
-    api_key=api_key,
     streaming=True,
-    callbacks=[ChatCallbackHandler()]
+    openai_api_key=api_key,
+    callbacks=[
+        StreamingStdOutCallbackHandler(),
+    ],
 )
 
-# 같은 file에 대해 embed_file()을 실행했었다면 cache에서 결과를 바로 반환하는 decorator
-@st.cache_resource(show_spinner="Embedding file...")
-def embed_file(file):
+def format_docs(docs):
+    return "\n\n".join(document.page_content for document in docs)
+
+questions_prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """
+        You are a helpful assistant that is role playing as a teacher.
+        
+        Based ONLY on the following context make 10 questions to test the user's knowledge about the text.
+        
+        You MUST consider the difficulty level.
+        
+        Each question should have 4 answers, three of them must be incorrect and one should be correct.
+        
+        Use (o) to signal the correct answer.
+        
+        Question examples:
+        
+        Question: What is the color of the ocean?
+        Answers: Red | Yellow | Green | Blue(o)
+        
+        Question: What is the capital of Georgia?
+        Answers: Baky | Tbilisi(o) | Manila | Beirut
+        
+        Question: When was Avatar released?
+        Answers: 2007 | 2001 | 2009(o) | 1998
+        
+        Question: Who was Julius Caesar?
+        Answers: A Roman Emperor(o) | Painter | Actor | Model
+        
+        Your turn!
+        
+        Context: {context}
+        Difficulty: {difficulty}
+        """
+    )
+])
+
+questions_chain = {
+    "context": format_docs
+} | questions_prompt | llm
+
+formatting_prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """
+        You are a powerful formatting algorithm.
+
+        You format exam questions into JSON format.
+        Answers with (o) are the correct ones.
+
+        Example Input:
+        Question: What is the color of the ocean?
+        Answers: Red|Yellow|Green|Blue(o)
+
+        Question: What is the capital or Georgia?
+        Answers: Baku|Tbilisi(o)|Manila|Beirut
+
+        Question: When was Avatar released?
+        Answers: 2007|2001|2009(o)|1998
+
+        Question: Who was Julius Caesar?
+        Answers: A Roman Emperor(o)|Painter|Actor|Model
+
+
+        Example Output:
+
+        ```json
+        {{ "questions": [
+                {{
+                    "question": "What is the color of the ocean?",
+                    "answers": [
+                        {{
+                            "answer": "Red",
+                            "correct": false
+                        }},
+                        {{
+                            "answer": "Yellow",
+                            "correct": false
+                        }},
+                        {{
+                            "answer": "Green",
+                            "correct": false
+                        }},
+                        {{
+                            "answer": "Blue",
+                            "correct": true
+                        }},
+                    ]
+                }},
+                {{
+                    "question": "What is the capital or Georgia?",
+                    "answers": [
+                        {{
+                            "answer": "Baku",
+                            "correct": false
+                        }},
+                        {{
+                            "answer": "Tbilisi",
+                            "correct": true
+                        }},
+                        {{
+                            "answer": "Manila",
+                            "correct": false
+                        }},
+                        {{
+                            "answer": "Beirut",
+                            "correct": false
+                        }},
+                    ]
+                }},
+                {{
+                    "question": "When was Avatar released?",
+                    "answers": [
+                        {{
+                            "answer": "2007",
+                            "correct": false
+                        }},
+                        {{
+                            "answer": "2001",
+                            "correct": false
+                        }},
+                        {{
+                            "answer": "2009",
+                            "correct": true
+                        }},
+                        {{
+                            "answer": "1998",
+                            "correct": false
+                        }},
+                    ]
+                }},
+                {{
+                    "question": "Who was Julius Caesar?",
+                    "answers": [
+                        {{
+                            "answer": "A Roman Emperor",
+                            "correct": true
+                        }},
+                        {{
+                            "answer": "Painter",
+                            "correct": false
+                        }},
+                        {{
+                            "answer": "Actor",
+                            "correct": false
+                        }},
+                        {{
+                            "answer": "Model",
+                            "correct": false
+                        }},
+                    ]
+                }}
+            ]
+        }}
+        ```
+        Your turn!
+        Questions: {context}
+        """,
+    )
+])
+
+formatting_chain = formatting_prompt | llm
+
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+
+@st.cache_resource(show_spinner="Loading file...")
+def split_file(file):
     file_content = file.read()
     file_path = f"./files/{file.name}"
-    with open(file_path, "wb") as f:
+    with open(file_path, "wb+") as f:
         f.write(file_content)
-
-    cache_dir = LocalFileStore(f"./.cache/{file.name}")
-
     splitter = CharacterTextSplitter.from_tiktoken_encoder(
         separator="\n",
         chunk_size=600,
         chunk_overlap=100,
     )
-
     loader = UnstructuredLoader(file_path)
-
     docs = splitter.split_documents(loader.load())
+    return docs
 
-    embeddings = OpenAIEmbeddings()
+@st.cache_data(show_spinner="Making quiz...")
+def run_quiz_chain(_docs, difficulty):
+    chain = (
+        RunnableLambda(lambda docs: {"context": format_docs(docs), "difficulty": difficulty})
+        | questions_prompt
+        | llm
+        | formatting_chain
+        | output_parser
+    )
+    return chain.invoke(_docs)
 
-    # 중복 요청 시 캐시된 결과를 반환
-    cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
-        embeddings, cache_dir
+with st.sidebar:
+    docs = None
+    file = None
+    
+    # Level bar for difficulty selection using a select slider.
+    difficulty = st.select_slider(
+        "Select quiz difficulty",
+        options=["Super Easy", "Easy", "Normal", "Hard", "Very Hard"],
+        value="Normal",
     )
 
-    # FAISS 라이브러리로 캐시에서 임베딩 벡터 검색
-    vectorstore = FAISS.from_documents(docs, cached_embeddings)
+    # 파일 선택
+    file = st.file_uploader(
+        "Upload a. txt .pdf or .docx file",
+        type=["pdf", "txt", "docx"],
+    )
+    if file:
+        docs = split_file(file)
 
-    # docs를 불러오는 역할
-    retriever = vectorstore.as_retriever()
-
-    return retriever
-
-def save_message(message, role):
-    st.session_state["messages"].append({"message": message, "role": role})
-
-def send_message(message, role, save=True):
-    with st.chat_message(role):
-        st.markdown(message)
-
-    if save:
-        save_message(message, role)
-
-# 채팅 기록을 채팅 화면에 보여주는 함수
-def paint_history():
-    for message in st.session_state["messages"]:
-        send_message(
-            message["message"],
-            message["role"],
-            save=False,
-        )
-
-# docs를 이중 줄바꿈으로 구분된 하나의 문자열로 반환하는 함수
-def format_docs(docs):
-    return "\n\n".join(document.page_content for document in docs)
-
-prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
+if not docs:
+    st.markdown(
         """
-        You are a helpful assistant. Answer the question using ONLY the following context. If you don't know the answer, just say you don't know. DON'T make anything up.
+        Welcome to QuizGPT!
         
-        Context: {context}
-        """,
-    ),
-    ("human", "{question}"),
-])
+        I will make a quiz from a file you upload!
+        Use this chatbot to test your knowledge and help you study!
 
-# 사이드바에서 파일 업로드
-with st.sidebar:
-    file = st.file_uploader("Upload a .txt .pdf or .docx file", type=["pdf", "txt", "docx"])
-
-if file:
-    retriever = embed_file(file)
-
-    send_message("I'm ready! Ask away!","ai", save=False)
-    paint_history()
-    message = st.chat_input("Ask anything about your file...")
-
-    if message:
-        send_message(message, "human")
-
-        # chain_type = stuff
-        chain = {
-            "context": retriever | RunnableLambda(format_docs),
-            "question": RunnablePassthrough(),
-        } | prompt | llm
-
-        with st.chat_message("ai"):
-            chain.invoke(message)
-
+        1. Input your OpenAI API Key on the sidebar
+        2. Adjust level.
+        3. Upload your file on the sidebar.
+        4. Get started!
+        """
+    )
 else:
-    st.session_state["messages"] = []
+    response = run_quiz_chain(docs, difficulty)
+    with st.form("questions_form"):
+        # Dictionary to store each question's response.
+        answers = {}
+        for idx, question in enumerate(response["questions"]):
+            st.write(question["question"])
+            answers[idx] = st.radio(
+                "Select an option",
+                [answer["answer"] for answer in question["answers"]],
+                index=None,
+                key=f"question_radio_{idx}"
+            )
+        button = st.form_submit_button("Submit")
 
+    if button:
+        all_correct = True
+        # Check each answer after submission.
+        for idx, question in enumerate(response["questions"]):
+            # Determine if the selected answer is correct.
+            if {"answer": answers[idx], "correct": True} in question["answers"]:
+                st.success(f"Question {idx+1} is correct!")
+            else:
+                st.error(f"Question {idx+1} is wrong!")
+                all_correct = False
 
-
-######## 정답 코드 ########
-# import streamlit as st
-# from langchain.document_loaders import UnstructuredFileLoader
-# from langchain.embeddings import CacheBackedEmbeddings, OpenAIEmbeddings
-# from langchain.storage import LocalFileStore
-# from langchain.text_splitter import CharacterTextSplitter
-# from langchain.vectorstores.faiss import FAISS
-# from langchain.chat_models import ChatOpenAI
-# from langchain.prompts import ChatPromptTemplate
-# from langchain.schema.runnable import RunnableLambda, RunnablePassthrough
-# from langchain.callbacks.base import BaseCallbackHandler
-# from pathlib import Path
-
-# st.set_page_config(
-#     page_title="Assignment #15",
-#     page_icon="📜",
-# )
-
-
-# class ChatCallbackHandler(BaseCallbackHandler):
-#     message = ""
-
-#     def on_llm_start(self, *args, **kwargs):
-#         self.message_box = st.empty()
-
-#     def on_llm_end(self, *args, **kwargs):
-#         save_message(self.message, "ai")
-
-#     def on_llm_new_token(self, token, *args, **kwargs):
-#         self.message += token
-#         self.message_box.markdown(self.message)
-
-
-# if "messages" not in st.session_state:
-#     st.session_state["messages"] = []
-
-
-# @st.cache_data(show_spinner="Embedding file...")
-# def embed_file(file):
-#     file_content = file.read()
-#     file_path = f"./.cache/files/{file.name}"
-#     Path("./.cache/files").mkdir(parents=True, exist_ok=True)
-#     with open(file_path, "wb+") as f:
-#         f.write(file_content)
-#     cache_dir = LocalFileStore(f"./.cache/embeddings/{file.name}")
-#     splitter = CharacterTextSplitter.from_tiktoken_encoder(
-#         separator="\n",
-#         chunk_size=600,
-#         chunk_overlap=100,
-#     )
-#     loader = UnstructuredFileLoader(f"{file_path}")
-#     docs = loader.load_and_split(text_splitter=splitter)
-#     embeddings = OpenAIEmbeddings(
-#         openai_api_key=openai_api_key,
-#     )
-#     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(embeddings, cache_dir)
-#     vectorstore = FAISS.from_documents(docs, cached_embeddings)
-#     retriever = vectorstore.as_retriever()
-#     return retriever
-
-
-# def save_message(message, role):
-#     st.session_state["messages"].append({"message": message, "role": role})
-
-
-# def send_message(message, role, save=True):
-#     with st.chat_message(role):
-#         st.markdown(message)
-#     if save:
-#         save_message(message, role)
-
-
-# def paint_history():
-#     for message in st.session_state["messages"]:
-#         send_message(message["message"], message["role"], save=False)
-
-
-# def format_docs(docs):
-#     return "\n\n".join(document.page_content for document in docs)
-
-
-# prompt = ChatPromptTemplate.from_messages(
-#     [
-#         (
-#             "system",
-#             """
-#             Answer the question using ONLY the following context. If you don't know the answer just say you don't know. DON't make anything up
-
-#             Context: {context}
-#             """,
-#         ),
-#         ("human", "{question}"),
-#     ]
-# )
-
-
-# def main():
-#     if not openai_api_key:
-#         return
-
-#     llm = ChatOpenAI(
-#         temperature=0.1,
-#         streaming=True,
-#         openai_api_key=openai_api_key,
-#         callbacks=[
-#             ChatCallbackHandler(),
-#         ],
-#     )
-
-#     if file:
-#         retriever = embed_file(file)
-
-#         send_message("I'm ready! Ask away!", "ai", save=False)
-#         paint_history()
-#         message = st.chat_input("Ask anything about your file.....")
-#         if message:
-#             send_message(message, "human")
-#             chain = (
-#                 {
-#                     "context": retriever | RunnableLambda(format_docs),
-#                     "question": RunnablePassthrough(),
-#                 }
-#                 | prompt
-#                 | llm
-#             )
-#             with st.chat_message("ai"):
-#                 chain.invoke(message)
-
-#     else:
-#         st.session_state["messages"] = []
-#         return
-
-
-# st.title("Document GPT")
-
-# st.markdown(
-#     """
-# Welcome!
-            
-# Use this chatbot to ask questions to an AI about your files!
-
-# 1. Input your OpenAI API Key on the sidebar
-# 2. Upload your file on the sidebar.
-# 3. Ask questions related to the document.
-# """
-# )
-
-# with st.sidebar:
-#     # API Key 입력
-#     openai_api_key = st.text_input("Input your OpenAI API Key")
-
-#     # 파일 선택
-#     file = st.file_uploader(
-#         "Upload a. txt .pdf or .docx file",
-#         type=["pdf", "txt", "docx"],
-#     )
-
-# try:
-#     main()
-# except Exception as e:
-#     st.error("Check your OpenAI API Key or File")
-#     st.write(e)
+        # If every answer is correct, display balloons.
+        if all_correct:
+            st.balloons()
