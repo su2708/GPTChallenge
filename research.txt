@@ -1,0 +1,51 @@
+Wikipedia Summary:
+In February 2024, a malicious backdoor was introduced to the Linux build of the xz utility within the liblzma library in versions 5.6.0 and 5.6.1 by an account using the name "Jia Tan". The backdoor gives an attacker who possesses a specific Ed448 private key remote code execution through OpenSSH on the affected Linux system. The issue has been given the Common Vulnerabilities and Exposures number CVE-2024-3094 and has been assigned a CVSS score of 10.0, the highest possible score.
+While xz is commonly present in most Linux distributions, at the time of discovery the backdoored version had not yet been widely deployed to production systems, but was present in development versions of major distributions. The backdoor was discovered by the software developer Andres Freund, who announced his findings on 29 March 2024.
+
+
+DuckDuckGo Found URLs:
+https://research.swtch.com/xz-timeline
+https://boehs.org/node/everything-i-know-about-the-xz-backdoor
+https://en.wikipedia.org/wiki/XZ_Utils_backdoor
+https://www.wired.com/story/xz-backdoor-everything-you-need-to-know/
+https://jfrog.com/blog/xz-backdoor-attack-cve-2024-3094-all-you-need-to-know/
+
+
+Extracted Website Content:
+
+Over a period of over two years, an attacker using the name “Jia Tan”
+worked as a diligent, effective contributor to the xz compression library,
+eventually being granted commit access and maintainership.
+Using that access, they installed a very subtle, carefully hidden backdoor into liblzma,
+a part of xz that also happens to be a dependency of OpenSSH sshd
+on Debian, Ubuntu, and Fedora, and other systemd-based Linux systems that patched sshd to link libsystemd.
+(Note that this does not include systems like Arch Linux, Gentoo, and NixOS, which do not patch sshd.)
+That backdoor watches for the attacker sending hidden commands at the start of an SSH session,
+giving the attacker the ability to run an arbitrary command on the target system without logging in:
+unauthenticated, targeted remote code execution.
+
+
+The attack was publicly disclosed on March 29, 2024 and
+appears to be the first serious known supply chain attack on widely used open source software.
+It marks a watershed moment in open source supply chain security, for better or worse.
+
+
+This post is a detailed timeline that I have constructed of the
+social engineering aspect of the attack, which appears to date
+back to late 2021.
+(See also my analysis of the attack script.)
+
+
+Corrections or additions welcome on Bluesky, Mastodon, or email.
+Prologue
+
+2005–2008: Lasse Collin, with help from others, designs the .xz file format using the LZMA compression algorithm, which compresses files to about 70% of what gzip did [1]. Over time this format becomes widely used for compressing tar files, Linux kernel images, and many other uses.
+Jia Tan arrives on scene, with supporting cast
+
+2021-10-29: Jia Tan sends first, innocuous patch to the xz-devel mailing list, adding “.editorconfig” file.
+
+
+2021-11-29: Jia Tan sends second innocuous patch to the xz-devel mailing list, fixing an apparent reproducible build problem. More patches that seem (even in retrospect) to be fine follow.
+
+
+2022-02-07: Lasse Collin merges first commi
